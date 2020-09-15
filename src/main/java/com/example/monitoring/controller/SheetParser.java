@@ -50,7 +50,6 @@ public class SheetParser {
     private static final String APPLICATION_NAME = "HR monitoring app stats calculator";
     @Value("${google.spreadsheet.id}")
     private String SPREADSHEET_ID;
-    private static final String USER_IDENTIFIER_KEY = "MY_DUMMY_USER";
     private static final JsonFactory JSON_FACTORY = JacksonFactory.getDefaultInstance();
     private static final String TOKENS_DIRECTORY_PATH = "tokens";
     private static HttpTransport HTTP_TRANSPORT = new NetHttpTransport();
@@ -135,7 +134,10 @@ public class SheetParser {
         String columnsRange = putColumnNamesIntoReportSheet(service, sheet);
         putCalculatedValuesIntoReportSheet(averageAssessments, service, sheet);
         setColumnSizeFitData(columnsRange, service, sheet);
-        return ResponseEntity.ok(averageAssessments);
+        String responseMessage = "sheet <a href=\"http://docs.google.com/spreadsheets/d/" +
+                SPREADSHEET_ID + "/edit#gid=" + sheet.getProperties().getSheetId() + "\"> link </a> " +
+                "to computed teams assessments";
+        return ResponseEntity.ok(responseMessage);
     }
 
     private void setColumnSizeFitData(String columnsRange, Sheets service, Sheet sheet) throws IOException {
@@ -235,8 +237,41 @@ public class SheetParser {
             request.setInsertDataOption("INSERT_ROWS");
             AppendValuesResponse response = request.execute();
             updateBorders(response.getUpdates().getUpdatedRange(), service, sheet);
+            mergeTeamCells(response.getUpdates().getUpdatedRange(), service, sheet);
+            alignCells(response.getUpdates().getUpdatedRange(), service, sheet);
         }
+    }
 
+    private void alignCells(String updatedRange, Sheets service, Sheet sheet) throws IOException {
+        RepeatCellRequest cellRequest = new RepeatCellRequest();
+        GridRange range = getGridRangeFromA1Notation(updatedRange, sheet);
+        range.setEndColumnIndex(range.getStartColumnIndex() + 2);
+        cellRequest.setRange(range);
+        CellData cellData = new CellData();
+        CellFormat cellFormat = new CellFormat();
+        cellFormat.setVerticalAlignment("MIDDLE");
+        cellFormat.setHorizontalAlignment("CENTER");
+        cellData.setUserEnteredFormat(cellFormat);
+        cellRequest.setCell(cellData);
+        cellRequest.setFields("userEnteredFormat(verticalAlignment, horizontalAlignment)");
+        Request request = new Request();
+        request.setRepeatCell(cellRequest);
+        BatchUpdateSpreadsheetRequest batchUpdate = new BatchUpdateSpreadsheetRequest();
+        batchUpdate.setRequests(Collections.singletonList(request));
+        service.spreadsheets().batchUpdate(SPREADSHEET_ID, batchUpdate).execute();
+    }
+
+    private void mergeTeamCells(String updatedRange, Sheets service, Sheet sheet) throws IOException {
+        MergeCellsRequest mergeRequest = new MergeCellsRequest();
+        GridRange range = getGridRangeFromA1Notation(updatedRange, sheet);
+        range.setEndColumnIndex(range.getStartColumnIndex() + 1);
+        mergeRequest.setRange(range);
+        mergeRequest.setMergeType("MERGE_ALL");
+        Request request = new Request();
+        request.setMergeCells(mergeRequest);
+        BatchUpdateSpreadsheetRequest batchUpdate = new BatchUpdateSpreadsheetRequest();
+        batchUpdate.setRequests(Collections.singletonList(request));
+        service.spreadsheets().batchUpdate(SPREADSHEET_ID, batchUpdate).execute();
     }
 
     private List<ValueRange> assessmentsByTeams(List<Performer> averageAssessments, String sheetName) {
