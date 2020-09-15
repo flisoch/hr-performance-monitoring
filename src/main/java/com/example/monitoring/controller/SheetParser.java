@@ -38,7 +38,8 @@ import java.security.GeneralSecurityException;
 import java.time.LocalDateTime;
 import java.time.format.TextStyle;
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static java.time.LocalDateTime.now;
 
@@ -130,27 +131,112 @@ public class SheetParser {
 
         List<Performer> performers = getPerformers(service);
         List<Performer> averageAssessments = getAverageAssessments(performers, service);
-        String sheetName = createReportSheet(service);
-        Integer updatedSheetsCount = putCalculatedValuesIntoReportSheet(averageAssessments, service, sheetName);
-        return ResponseEntity.ok(updatedSheetsCount);
+        Sheet sheet = createReportSheet(service);
+        String columnsRange = putColumnNamesIntoReportSheet(service, sheet);
+        putCalculatedValuesIntoReportSheet(averageAssessments, service, sheet);
+        setColumnSizeFitData(columnsRange, service, sheet);
+        return ResponseEntity.ok(averageAssessments);
     }
 
-    private Integer putCalculatedValuesIntoReportSheet(List<Performer> averageAssessments, Sheets service, String sheetName) throws IOException {
-        ValueRange columnNames = createColumns(sheetName);
-        List<ValueRange> commandsAssessments = assessmentsByTeams(averageAssessments, sheetName);
+    private void setColumnSizeFitData(String columnsRange, Sheets service, Sheet sheet) throws IOException {
+        AutoResizeDimensionsRequest request = new AutoResizeDimensionsRequest();
+        DimensionRange dimensionRange = new DimensionRange();
+        dimensionRange.setSheetId(sheet.getProperties().getSheetId());
+        dimensionRange.setDimension("COLUMNS");
+        GridRange gridRange = getGridRangeFromA1Notation(columnsRange, sheet);
+        dimensionRange.setStartIndex(gridRange.getStartColumnIndex());
+        dimensionRange.setEndIndex(gridRange.getEndColumnIndex());
+        request.setDimensions(dimensionRange);
+        BatchUpdateSpreadsheetRequest batchUpdateRequest = new BatchUpdateSpreadsheetRequest();
+        Request r = new Request();
+        r.setAutoResizeDimensions(request);
+        batchUpdateRequest.setRequests(Collections.singletonList(r));
+        BatchUpdateSpreadsheetResponse response = service.spreadsheets().batchUpdate(SPREADSHEET_ID, batchUpdateRequest).execute();
+        List<Response> replies = response.getReplies();
+    }
+
+    private String putColumnNamesIntoReportSheet(Sheets service, Sheet sheet) throws IOException {
+        String sheetTitle = sheet.getProperties().getTitle();
+        ValueRange columnNames = createColumns(sheetTitle);
+        Sheets.Spreadsheets.Values.Append request = service.spreadsheets().values()
+                .append(SPREADSHEET_ID, sheetTitle + "!A:E", columnNames);
+        request.setValueInputOption("RAW");
+        AppendValuesResponse response = request.execute();
+        String updatedRange = response.getUpdates().getUpdatedRange();
+        updateBorders(updatedRange, service, sheet);
+        return updatedRange;
+    }
+
+    private void updateBorders(String updatedRange, Sheets service, Sheet sheet) throws IOException {
+        Border border = new Border();
+        border.setStyle("SOLID_MEDIUM");
+        Color color = new Color();
+        color.setRed(255F);
+        color.setGreen(255F);
+        color.setBlue(255F);
+        color.setAlpha(1F);
+        border.setColor(color);
+        UpdateBordersRequest bordersRequest = new UpdateBordersRequest();
+        bordersRequest.setBottom(border);
+        bordersRequest.setRight(border.clone());
+        bordersRequest.setLeft(border.clone());
+        GridRange gridRange = getGridRangeFromA1Notation(updatedRange, sheet);
+        bordersRequest.setRange(gridRange);
+        Request request = new Request();
+        request.setUpdateBorders(bordersRequest);
+        BatchUpdateSpreadsheetRequest updateRequest = new BatchUpdateSpreadsheetRequest();
+        updateRequest.setRequests(Collections.singletonList(request));
+
+        service.spreadsheets().batchUpdate(SPREADSHEET_ID, updateRequest).execute();
+
+    }
+
+    private GridRange getGridRangeFromA1Notation(String updatedRange, Sheet sheet) throws IOException {
+        GridRange gridRange = new GridRange();
+        Integer sheetId = sheet.getProperties().getSheetId();
+        gridRange.setSheetId(sheetId);
+        setIndexes(gridRange, updatedRange);
+        return gridRange;
+    }
+
+    private void setIndexes(GridRange gridRange, String updatedRange) {
+        Pattern pattern = Pattern.compile("(^.+)!(.+):(.+$)");
+        Matcher matcher = pattern.matcher(updatedRange);
+        matcher.find();
+        String start = matcher.group(2);
+        String end = matcher.group(3);
+        gridRange.setStartRowIndex(Integer.parseInt(start.substring(1)) - 1);
+        gridRange.setStartColumnIndex(getNumberForChar(start.charAt(0)) - 1);
+        gridRange.setEndRowIndex(Integer.parseInt(end.substring(1)));
+        gridRange.setEndColumnIndex(getNumberForChar(end.charAt(0)));
+        System.out.println(gridRange);
+    }
+
+    private String getCharForNumber(int i) {
+        return i > 0 && i < 27 ? String.valueOf((char) (i + 64)) : null;
+    }
+
+    private int getNumberForChar(char c) {
+        int num = c;
+        num = num - 64;
+        return num;
+    }
+
+    private void putCalculatedValuesIntoReportSheet(List<Performer> averageAssessments, Sheets service, Sheet sheet) throws IOException {
+        String sheetTitle = sheet.getProperties().getTitle();
+        List<ValueRange> commandsAssessments = assessmentsByTeams(averageAssessments, sheetTitle);
         List<ValueRange> values = new ArrayList<>();
-        values.add(columnNames);
         values.addAll(commandsAssessments);
-        BatchUpdateValuesRequest requestBody = new BatchUpdateValuesRequest();
-        requestBody.setValueInputOption("INPUT_VALUE_OPTION_UNSPECIFIED");
-        requestBody.setValueInputOption("RAW");
-        requestBody.setData(values);
 
-        Sheets.Spreadsheets.Values.BatchUpdate request =
-                service.spreadsheets().values().batchUpdate(SPREADSHEET_ID, requestBody);
+        for (ValueRange valueRange : values) {
+            Sheets.Spreadsheets.Values.Append request = service.spreadsheets().values()
+                    .append(SPREADSHEET_ID, sheetTitle + "!A:E", valueRange);
+            request.setValueInputOption("RAW");
+            request.setInsertDataOption("INSERT_ROWS");
+            AppendValuesResponse response = request.execute();
+            updateBorders(response.getUpdates().getUpdatedRange(), service, sheet);
+        }
 
-        BatchUpdateValuesResponse response = request.execute();
-        return response.getTotalUpdatedSheets();
     }
 
     private List<ValueRange> assessmentsByTeams(List<Performer> averageAssessments, String sheetName) {
@@ -174,7 +260,7 @@ public class SheetParser {
         for (String team : teams) {
             ValueRange teamStats = getTeamStats(assessmentsByTeams.get(team));
             teamStats.setRange(sheetName + "!A:E");
-            teamStats.setMajorDimension("COLUMNS");
+            teamStats.setMajorDimension("ROWS");
             result.add(teamStats);
         }
         return result;
@@ -182,7 +268,7 @@ public class SheetParser {
 
     private ValueRange getTeamStats(List<Performer> assessmentsByTeams) {
         ValueRange valueRange = new ValueRange();
-        String teamName = "";
+        String teamName = assessmentsByTeams.get(0).getCompetencyAssessment().getTeam().getName();
         String competencyLower = "";
         String competencyMeet = "";
         String competencyHigher = "";
@@ -193,23 +279,23 @@ public class SheetParser {
 
             switch (performer.getCompetencyAssessment().getAssessmentValue()) {
                 case LOWER:
-                    competencyLower += performer.getName() + " ";
+                    competencyLower += performer.getName() + "\n";
                     break;
                 case MEET:
-                    competencyMeet += performer.getName() + " ";
+                    competencyMeet += performer.getName() + "\n";
                     break;
                 case HIGHER:
-                    competencyHigher += performer.getName() + " ";
+                    competencyHigher += performer.getName() + "\n";
             }
             switch (performer.getEfficiencyAssessments().getAssessmentValue()) {
                 case LOWER:
-                    efficiencyLower += performer.getName() + " ";
+                    efficiencyLower += performer.getName() + "\n";
                     break;
                 case MEET:
-                    efficiencyMeet += performer.getName() + " ";
+                    efficiencyMeet += performer.getName() + "\n";
                     break;
                 case HIGHER:
-                    efficiencyHigher += performer.getName() + " ";
+                    efficiencyHigher += performer.getName() + "\n";
             }
         }
         List<Object> competencyValues = Arrays.asList(
@@ -237,13 +323,13 @@ public class SheetParser {
                 Collections.singletonList("выше"));
 
         ValueRange columns = new ValueRange();
-        columns.setRange(sheetName + "!A1:E1");
+        columns.setRange(sheetName + "!A:E");
         columns.setValues(lists);
         columns.setMajorDimension("COLUMNS");
         return columns;
     }
 
-    private String createReportSheet(Sheets service) throws IOException {
+    private Sheet createReportSheet(Sheets service) throws IOException {
         AddSheetRequest addSheetRequest = new AddSheetRequest();
         SheetProperties sheetProperties = new SheetProperties();
         String title = getReportTitle();
@@ -254,8 +340,11 @@ public class SheetParser {
         requests.add(request);
         BatchUpdateSpreadsheetRequest requestBody = new BatchUpdateSpreadsheetRequest();
         requestBody.setRequests(requests);
+        requestBody.setIncludeSpreadsheetInResponse(true);
         BatchUpdateSpreadsheetResponse response = service.spreadsheets().batchUpdate(SPREADSHEET_ID, requestBody).execute();
-        return title;
+        List<Sheet> sheets = response.getUpdatedSpreadsheet().getSheets();
+        Sheet newSheet = sheets.stream().filter(sheet -> sheet.getProperties().getTitle().equals(title)).findAny().get();
+        return newSheet;
     }
 
     private String getReportTitle() {
@@ -319,11 +408,4 @@ public class SheetParser {
                 service.spreadsheets().values().get(SPREADSHEET_ID, range).execute();
         return request.getValues();
     }
-
-    private List<String> getAssessmentRanges(String pmSheetName) {
-        List<String> ranges = new ArrayList<>();
-        String[] ranges1 = new String[]{"A2:A7", "B2:B7", "C2:C7", "D2:D7"};
-        return Arrays.stream(ranges1).map(s -> pmSheetName + s).collect(Collectors.toList());
-    }
-
 }
