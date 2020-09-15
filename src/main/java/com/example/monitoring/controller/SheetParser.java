@@ -114,8 +114,8 @@ public class SheetParser {
         return null;
     }
 
-    @GetMapping("/sheet")
-    public ResponseEntity sheetData(HttpServletRequest request, @RequestParam(required = false) String tabName) throws GeneralSecurityException, IOException {
+    @GetMapping("/make-report")
+    public ResponseEntity sheetData(HttpServletRequest request, @RequestParam(required = false) String title) throws GeneralSecurityException, IOException {
         Credential credentials = getCredentials(request);
         if (credentials == null) {
             return ResponseEntity
@@ -130,7 +130,7 @@ public class SheetParser {
 
         List<Performer> performers = getPerformers(service);
         List<Performer> averageAssessments = getAverageAssessments(performers, service);
-        Sheet sheet = createReportSheet(service);
+        Sheet sheet = createReportSheet(service, title);
         String columnsRange = putColumnNamesIntoReportSheet(service, sheet);
         putCalculatedValuesIntoReportSheet(averageAssessments, service, sheet);
         setColumnSizeFitData(columnsRange, service, sheet);
@@ -364,11 +364,13 @@ public class SheetParser {
         return columns;
     }
 
-    private Sheet createReportSheet(Sheets service) throws IOException {
+    private Sheet createReportSheet(Sheets service, String tabTitle) throws IOException {
         AddSheetRequest addSheetRequest = new AddSheetRequest();
         SheetProperties sheetProperties = new SheetProperties();
-        String title = getReportTitle();
-        sheetProperties.setTitle(title);
+        if(tabTitle == null || tabTitle.equals("")) {
+            tabTitle = getReportTitle();
+        }
+        sheetProperties.setTitle(tabTitle);
         addSheetRequest.setProperties(sheetProperties);
         Request request = new Request().setAddSheet(addSheetRequest);
         List<Request> requests = new ArrayList<>();
@@ -378,13 +380,13 @@ public class SheetParser {
         requestBody.setIncludeSpreadsheetInResponse(true);
         BatchUpdateSpreadsheetResponse response = service.spreadsheets().batchUpdate(SPREADSHEET_ID, requestBody).execute();
         List<Sheet> sheets = response.getUpdatedSpreadsheet().getSheets();
-        Sheet newSheet = sheets.stream().filter(sheet -> sheet.getProperties().getTitle().equals(title)).findAny().get();
+        Sheet newSheet = sheets.stream().filter(sheet -> sheet.getProperties().getTitle().equals(sheetProperties.getTitle())).findAny().get();
         return newSheet;
     }
 
     private String getReportTitle() {
         LocalDateTime now = now();
-        String title = "report " + now.getMonth().getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + now.getSecond();
+        String title = "report " + now.getMonth().getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + now.getYear();
         return title;
     }
 
